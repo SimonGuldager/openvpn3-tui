@@ -30,6 +30,14 @@ const (
 	InputProfileName
 )
 
+// ConfirmMode represents what confirmation we're requesting
+type ConfirmMode int
+
+const (
+	ConfirmNone ConfirmMode = iota
+	ConfirmDeleteProfile
+)
+
 // Model is the main application model
 type Model struct {
 	// Core state
@@ -53,6 +61,11 @@ type Model struct {
 	textInput  textinput.Model
 	newProfile config.Profile
 	completer  *PathCompleter
+
+	// Confirm state
+	confirmMode   ConfirmMode
+	confirmTarget string // Name of item being confirmed
+	confirmIndex  int    // Index of item being confirmed
 
 	// Messages
 	statusMsg string
@@ -132,6 +145,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Handle input mode separately
 		if m.inputMode != InputNone {
 			return m.handleInputMode(msg)
+		}
+
+		// Handle confirm mode separately
+		if m.confirmMode != ConfirmNone {
+			return m.handleConfirmMode(msg)
 		}
 
 		switch msg.String() {
@@ -318,6 +336,40 @@ func (m Model) handleInputMode(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, cmd
 }
 
+// handleConfirmMode handles key events during confirm mode
+func (m Model) handleConfirmMode(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "y", "Y", "enter":
+		// Perform the confirmed action
+		if m.confirmMode == ConfirmDeleteProfile {
+			name := m.confirmTarget
+			m.config.RemoveProfile(m.confirmIndex)
+			if err := m.config.Save(); err != nil {
+				m.errorMsg = fmt.Sprintf("Failed to save config: %v", err)
+			} else {
+				m.statusMsg = fmt.Sprintf("Removed profile: %s", name)
+			}
+			m.profileValid = m.config.ValidateProfiles()
+			if m.profileCursor >= len(m.config.Profiles) {
+				m.profileCursor = max(0, len(m.config.Profiles)-1)
+			}
+		}
+		m.confirmMode = ConfirmNone
+		m.confirmTarget = ""
+		m.confirmIndex = 0
+		return m, nil
+
+	case "n", "N", "esc":
+		// Cancel the action
+		m.confirmMode = ConfirmNone
+		m.confirmTarget = ""
+		m.confirmIndex = 0
+		return m, nil
+	}
+
+	return m, nil
+}
+
 // startAddProfile enters input mode for adding a profile
 func (m Model) startAddProfile() (tea.Model, tea.Cmd) {
 	m.inputMode = InputProfilePath
@@ -389,17 +441,10 @@ func (m Model) handleDelete() (tea.Model, tea.Cmd) {
 
 	if m.currentView == ViewProfiles {
 		if len(m.config.Profiles) > 0 {
-			name := m.config.Profiles[m.profileCursor].Name
-			m.config.RemoveProfile(m.profileCursor)
-			if err := m.config.Save(); err != nil {
-				m.errorMsg = fmt.Sprintf("Failed to save config: %v", err)
-			} else {
-				m.statusMsg = fmt.Sprintf("Removed profile: %s", name)
-			}
-			m.profileValid = m.config.ValidateProfiles()
-			if m.profileCursor >= len(m.config.Profiles) {
-				m.profileCursor = max(0, len(m.config.Profiles)-1)
-			}
+			// Enter confirm mode instead of immediate deletion
+			m.confirmMode = ConfirmDeleteProfile
+			m.confirmTarget = m.config.Profiles[m.profileCursor].Name
+			m.confirmIndex = m.profileCursor
 		}
 		return m, nil
 	}
@@ -491,6 +536,12 @@ func (m Model) View() string {
 	b.WriteString(m.renderTabs())
 	b.WriteString("\n\n")
 
+	// Confirm mode
+	if m.confirmMode != ConfirmNone {
+		b.WriteString(m.renderConfirmMode())
+		return b.String()
+	}
+
 	// Input mode
 	if m.inputMode != InputNone {
 		b.WriteString(m.renderInputMode())
@@ -577,6 +628,17 @@ func (m Model) renderInputMode() string {
 	} else {
 		b.WriteString(m.styles.Help.Render("enter: confirm • esc: cancel"))
 	}
+
+	return m.styles.Box.Render(b.String())
+}
+
+func (m Model) renderConfirmMode() string {
+	var b strings.Builder
+
+	b.WriteString(m.styles.Subtitle.Render("Confirm Delete"))
+	b.WriteString("\n\n")
+	b.WriteString(fmt.Sprintf("Delete profile '%s'?\n\n", m.confirmTarget))
+	b.WriteString(m.styles.Help.Render("y/enter: confirm • n/esc: cancel"))
 
 	return m.styles.Box.Render(b.String())
 }
